@@ -1,0 +1,44 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
+      - name: Keystore
+        env:
+          KS_B64: ${{ secrets.SONATA_KEYSTORE_B64 }}
+        run: |
+          mkdir -p keystore
+          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > keystore/sonata.jks; echo "using repo keystore";
+          else keytool -genkeypair -keystore keystore/sonata.jks -storepass sonataos -keypass sonataos -alias sonata -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SonataOS CI"; echo "::warning::ephemeral keystore"; fi
+      - name: Unit tests + screenshots (Paparazzi) + release APK
+        env:
+          SONATA_KS_PASS: ${{ secrets.SONATA_KS_PASS || 'sonataos' }}
+        run: gradle --no-daemon recordPaparazziDebug assembleRelease
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk SonataOS.apk && ls -la SonataOS.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: SonataOS-apk, path: SonataOS.apk }
+      - uses: actions/upload-artifact@v4
+        with: { name: screenshots, path: app/src/test/snapshots/images/ }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: test-reports, path: app/build/reports/tests/ }
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release create "$GITHUB_REF_NAME" SonataOS.apk --title "SonataOS $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md || gh release upload "$GITHUB_REF_NAME" SonataOS.apk --clobber
